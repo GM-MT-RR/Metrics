@@ -1,0 +1,38 @@
+# SIFT keypoints + homography + Farneback optical-flow re-alignment over a
+# homography+flow synthetic view. The flow refiner SHOULD recover the nonlinear
+# warp the synth injects -> expect ΔE markedly lower than refine=none.
+# Pipeline: align=keypoint_homography, refine=flow, patches=gradient.
+experiment: homflow_sift_flow
+save_dir: Experiments_de_eval
+overwrite: true
+
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/paired/iphone-x/dng
+  target: ../../data/iphone2samsung_or/pair-np-dv/paired/samsung-s9/dng
+image_ext: [".mat"]
+sample_indices: [0, 1, 2]
+n_workers: 4
+save_debug: true
+
+synth:
+  type: homography_flow
+  params:
+    homography_noise_std: 0.05
+    flow_amplitude_px: 6.0
+    flow_smooth_sigma: 40.0
+    seed: 0
+
+matcher:
+  align:
+    type: keypoint_homography
+    params: {detector: sift, use_ransac: true, ransac_threshold: 1.0}
+  refine:
+    type: flow
+    params: {pyr_scale: 0.5, levels: 6, winsize: 25, iterations: 5, poly_n: 5, poly_sigma: 1.2, flags: 0}
+  patches:
+    type: gradient
+    params: {resize: 0.10, gradient_threshold: 25.0, window_radius: 2.0, grid_k: 3, max_pairs: 50000}
+
+eval:
+  gradient_threshold: 25.0
+  linearize: false

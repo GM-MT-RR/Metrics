@@ -77,6 +77,7 @@ def refine_homography_ffd(
     
     # 3. Setup the Optimizer
     optimizer = torch.optim.Adam([coarse_displacement], lr=lr)
+    
     mse_criterion = nn.MSELoss()
     
     for i in range(iterations):

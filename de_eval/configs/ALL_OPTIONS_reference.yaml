@@ -1,0 +1,129 @@
+# =============================================================================
+# de_eval — FULL REFERENCE CONFIG (every option for every pipeline stage)
+# =============================================================================
+# This file is documentation, not a ready-to-run experiment: it lists EVERY
+# top-level field, the synth, and the three swappable matcher stages
+# (align / refine / patches) with all their registered types, parameters, and the
+# code default shown as `# default: <value>`.
+#
+# The matcher is composed from three independent stages — pick exactly ONE type
+# per stage. Any combination is valid:
+#     align:   keypoint_homography | roma_dense
+#     refine:  none | flow | raft
+#     patches: gradient | sgbm
+#
+# A real `run` config (python main.py run -c <file>) needs one type per stage with
+# the alternatives deleted/commented. For a sweep, see `all_matchers_Batch.yaml`
+# (uses `experiments:`). Values here are the code defaults, so this doubles as the
+# canonical list of tunables.
+# =============================================================================
+
+experiment: reference_all_options       # required; names <save_dir>/<experiment>/
+save_dir: Experiments_de_eval           # default: Experiments_de_eval
+overwrite: false                        # default: false  (true wipes the exp dir first)
+
+# ---- Data: source keeps colours (iPhone), target donates the pose (Samsung) ----
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/paired/iphone-x/dng    # required
+  target: ../../data/iphone2samsung_or/pair-np-dv/paired/samsung-s9/dng  # required
+
+image_ext: [".mat"]            # default: [".mat"]  file extensions paired by stem
+imsize: null                   # default: null  (optional int: longest-side resize on load)
+sample_indices: null           # default: null  (e.g. [0, 1, 2] to limit to a few pairs)
+n_workers: 8                   # default: 8  (>1 => ProcessPoolExecutor; use 1 for GPU stages)
+save_debug: false              # default: false  (true writes per-pair notebook-style PNGs)
+
+# =============================================================================
+# SYNTH — how the misaligned-but-same-colour view is generated from `source`
+# =============================================================================
+synth:
+  type: homography_flow        # the only registered synth
+  params:
+    homography_noise_std: 0.05 # default: 0.05  noise on H^-1 (projective misalignment)
+    flow_amplitude_px: 6.0     # default: 6.0   max nonlinear flow displacement; 0.0 => pure-homography baseline
+    flow_smooth_sigma: 40.0    # default: 40.0  Gaussian sigma smoothing the random flow field
+    ransac_threshold: 1.0      # default: 1.0   RANSAC reproj threshold for the synth homography
+    seed: 0                    # default: 0     RNG seed (noise + flow are reproducible)
+
+# =============================================================================
+# MATCHER — three swappable stages: align -> refine -> patches.
+# Pick ONE type per stage; all options are shown, comment out the ones you don't use.
+# Detectors (keypoint_homography align / sgbm patches): akaze | sift | loftr | roma
+#   akaze/sift run under .venv; loftr (kornia) / roma (romatch) / raft (torchvision)
+#   need the user py3.13 env (+ CUDA) and n_workers: 1.
+# =============================================================================
+matcher:
+
+  # ---- STAGE 1: align — bring B into A's frame ------------------------------
+  align:
+    # (a) keypoints + homography (undoes a projective misalignment)
+    type: keypoint_homography
+    params:
+      detector: sift           # default: sift   akaze | sift | loftr | roma
+      use_ransac: true         # default: true   RANSAC filter on the keypoint matches
+      ransac_threshold: 1.0    # default: 1.0    RANSAC reproj threshold (px)
+    # (b) RoMa dense warp -> resample B into A's frame (+ per-pixel certainty).
+    #     Replaces the keypoint+homography geometry entirely. py3.13 + CUDA.
+    # type: roma_dense
+    # params:
+    #   confidence_threshold: 0.5  # default: 0.5  keep dense pixels with certainty > this
+    #   smooth_certainty: true     # default: true 5x5 avg-pool smoothing of the certainty map
+
+  # ---- STAGE 2: refine — correct residual misalignment ---------------------
+  refine:
+    # (a) none: homography-only baseline (pass-through)
+    type: none
+    # (b) Farneback dense optical flow (cv2, CPU)
+    # type: flow
+    # params:                  # cv2.calcOpticalFlowFarneback params (defaults shown)
+    #   pyr_scale: 0.5         # default: 0.5
+    #   levels: 6              # default: 6
+    #   winsize: 25            # default: 25
+    #   iterations: 5          # default: 5
+    #   poly_n: 5              # default: 5
+    #   poly_sigma: 1.2        # default: 1.2
+    #   flags: 0               # default: 0
+    # (c) RAFT (torchvision raft_large), GPU; py3.13 + CUDA, n_workers: 1
+    # type: raft
+    # params:
+    #   raft_h: 520            # default: 520  working height RAFT estimates flow at
+    #   raft_w: 960            # default: 960  working width  (flow is upsampled+rescaled back)
+
+  # ---- STAGE 3: patches — pick centers, window-sample to matched RGB pairs --
+  # Every center is expanded into a grid_k x grid_k sub-pixel window of radius
+  # window_radius px; each grid point becomes one RGB pair (grid_k**2 per center).
+  patches:
+    # (a) gradient: flat (low L*-gradient) pixels of the co-registered frame
+    type: gradient
+    params:
+      resize: 0.10             # default: 0.10   downscale the frame before the grad cut
+      gradient_threshold: 25.0 # default: 25.0   keep pixels with L* Sobel grad < this (flat)
+      window_radius: 2.0       # default: 2.0    half-size of the sampling window (px)
+      grid_k: 3                # default: 3      grid_k x grid_k sub-pixel samples per center
+      max_pairs: 50000         # default: 50000  cap on final pairs (centers * grid_k**2)
+      seed: 0                  # default: 0      RNG seed for center subsampling
+    # (b) sgbm: keypoints -> fundamental matrix -> uncalibrated rectify -> StereoSGBM
+    #     disparity -> back-projected matched centers (A and B centers differ).
+    # type: sgbm
+    # params:
+    #   detector: akaze            # default: akaze  akaze | sift | loftr | roma
+    #   min_disparity: -64         # default: -64
+    #   num_disparities: 192       # default: 192   must be divisible by 16
+    #   block_size: 7              # default: 7     odd, typically 3..11
+    #   uniqueness_ratio: 15       # default: 15
+    #   speckle_window_size: 150   # default: 150
+    #   speckle_range: 2           # default: 2
+    #   disp12_max_diff: 1         # default: 1
+    #   clahe_clip: 2.0            # default: 2.0   CLAHE clip limit on rectified grays
+    #   fundamental_threshold: 1.0 # default: 1.0   USAC_MAGSAC reproj threshold for F
+    #   window_radius: 2.0         # default: 2.0
+    #   grid_k: 3                  # default: 3
+    #   max_pairs: 50000           # default: 50000
+    #   seed: 0                    # default: 0
+
+# =============================================================================
+# EVAL — ΔE settings shared by all stages
+# =============================================================================
+eval:
+  gradient_threshold: 25.0     # default: 25.0  (kept for back-compat; flat cut is the patches param)
+  linearize: false             # default: false sRGB->linear before Lab (set true for gamma-encoded inputs)

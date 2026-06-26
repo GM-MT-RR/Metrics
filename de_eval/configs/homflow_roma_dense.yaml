@@ -1,0 +1,41 @@
+# RoMa DENSE alignment over a homography+flow synthetic view. RoMa's dense warp
+# resamples B into A's frame (pixel-for-pixel, NOT isolated keypoints) and yields a
+# per-pixel certainty used as the valid mask; the gradient extractor then keeps the
+# confident+flat pixels and samples a sub-pixel window around each. Expect ΔE ≈ 0.
+# Pipeline: align=roma_dense, refine=none, patches=gradient.
+#
+# NOTE: needs `romatch` (+ torch/CUDA) — run with the user python 3.13 env, not
+# .venv. Use n_workers: 1 (single GPU process).
+experiment: homflow_roma_dense
+save_dir: Experiments_de_eval
+overwrite: true
+
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/paired/iphone-x/dng
+  target: ../../data/iphone2samsung_or/pair-np-dv/paired/samsung-s9/dng
+image_ext: [".mat"]
+sample_indices: [0, 1, 2]
+n_workers: 1
+save_debug: true
+
+synth:
+  type: homography_flow
+  params:
+    homography_noise_std: 0.05
+    flow_amplitude_px: 6.0
+    flow_smooth_sigma: 40.0
+    seed: 0
+
+matcher:
+  align:
+    type: roma_dense
+    params: {confidence_threshold: 0.9, smooth_certainty: true}
+  refine:
+    type: none
+  patches:
+    type: gradient
+    params: {resize: 0.10, gradient_threshold: 25.0, window_radius: 2.0, grid_k: 3, max_pairs: 50000}
+
+eval:
+  gradient_threshold: 25.0
+  linearize: false
