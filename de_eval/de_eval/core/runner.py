@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 
 from .config import Config, BatchConfig
 from .logger import Logger
-from ..io import PairedViewDataset, load_view
+from ..io import PairedViewDataset, load_view, load_mask
 from ..synth import get_synth
 from ..eval import delta_e_pairs, summarize
 from ..report import (
@@ -40,6 +40,7 @@ from ..report import (
     save_keypoint_matches,
     save_sparse_pairs,
     save_masked_overlay,
+    save_step_images,
 )
 
 
@@ -59,7 +60,7 @@ def _process_pair(args: Tuple) -> Dict:
     """Worker: synth + align + ΔE for one pair. Returns a per-image row dict."""
     from ..pipeline import Pipeline  # lazy: avoids core<->pipeline import cycle
 
-    (src_path, tgt_path, rel, cfg_dict) = args
+    (src_path, tgt_path, mask_path, rel, cfg_dict) = args
     cfg = Config(**cfg_dict)
 
     synth = get_synth(cfg.synth.type)(**cfg.synth.params)
@@ -69,7 +70,18 @@ def _process_pair(args: Tuple) -> Dict:
     tgt = load_view(tgt_path, imsize=cfg.imsize)
 
     sr = synth.synthesize(src, tgt)
-    res = pipeline.run(src, sr.image, valid_mask=sr.valid_mask)
+    # The B-validity mask (if any) lives in B's own frame, same as sr.image under
+    # synth:pass. AND it into valid_mask BEFORE alignment so it then rides every B
+    # transform (warp/flow/resize) in lockstep and excludes known-wrong B pixels.
+    valid = sr.valid_mask
+    if mask_path is not None:
+        b_mask = load_mask(mask_path, imsize=cfg.imsize,
+                           erode=cfg.data.mask_erode)      # True == valid B pixel
+        if b_mask.shape != valid.shape:
+            raise ValueError(
+                f"mask shape {b_mask.shape} != view shape {valid.shape} for {rel}")
+        valid = valid & b_mask
+    res = pipeline.run(src, sr.image, valid_mask=valid)
 
     # Single ΔE path: every extractor normalizes to matched RGB pairs.
     de_vals = delta_e_pairs(res.pairs_a, res.pairs_b, linearize=cfg.eval.linearize)
@@ -121,12 +133,19 @@ def _save_debug_visuals(out_dir, src, sr, res, de_vals) -> None:
             out_dir / "extracted_patches.png",
         )
         save_masked_overlay(
-            res.img_a_full, res.coords_a, res.pairs_b, np.asarray(de_vals),
+            res.img_a_full, res.img_b_full, res.coords_a, np.asarray(de_vals),
             out_dir / "masked_overlay.png",
         )
 
-    # Any extra named debug images the stages produced (flow, disparity, keep…).
+    # The ACTUAL real image at each pipeline step (align -> refine -> extract),
+    # dumped as plain PNGs into a dedicated steps/ dir for step-by-step inspection.
+    save_step_images(res.debug, out_dir / "steps")
+
+    # Any other named debug *figures* the stages produced (flow, disparity,
+    # certainty…). step__* keys are the raw per-stage images handled above — skip.
     for name, dbg in res.debug.items():
+        if name.startswith("step__"):
+            continue
         _save_debug_image(dbg, name, out_dir / f"{name}.png")
 
 
@@ -150,13 +169,15 @@ def run_experiment(config: Config) -> Dict:
     ds = PairedViewDataset(
         config.data.source, config.data.target,
         extensions=config.image_ext, sample_indices=config.sample_indices,
+        mask_dir=config.data.mask,
     )
     Logger.info(f"Pairs: {len(ds)}")
     if len(ds) == 0:
         raise ValueError(f"No paired views found under {config.data.source}.")
 
     cfg_dict = config.model_dump()
-    jobs = [(str(sp), str(tp), str(ds.relpath(sp)), cfg_dict) for sp, tp in ds]
+    jobs = [(str(sp), str(tp), (str(mp) if mp is not None else None),
+             str(ds.relpath(sp)), cfg_dict) for sp, tp, mp in ds]
 
     rows: List[Dict] = []
     # Single worker => run inline (cheaper, easier to debug; also for GPU matchers).
@@ -198,7 +219,7 @@ def run_experiment(config: Config) -> Dict:
 
 
 def _safe_process(job: Tuple) -> Dict:
-    rel = job[2]
+    rel = job[3]
     try:
         return _process_pair(job)
     except Exception as e:  # keep the batch alive; record the failure

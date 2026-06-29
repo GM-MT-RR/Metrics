@@ -1,0 +1,99 @@
+# Full matcher sweep over the simulatron 16-bit linear PNG dataset.
+#
+# Data: source = iphone (reference colours), target = iphone-s (the REAL iPhone->Samsung
+# perspective warp, simulatron_dataset.py). synth: pass returns iphone-s unchanged, so the
+# matchers are scored against the real warp. image_ext: [".png"] -> 16-bit-aware load_view.
+#
+# Experiment design (as requested):
+#   1. ALL align detectors with refine=flow ("Normal" homography + optical flow), gradient patches:
+#        sift, akaze, loftr, roma
+#   2. REFINE sweep — RoMa keypoints only, vary the refiner (flow, raft), gradient patches.
+#   3. PATCHES sweep — RoMa keypoints only, vary the extractor (gradient, sgbm).
+#   4. RoMa DENSE config at the end (align=roma_dense).
+#
+# loftr/roma/raft need the user python 3.13 env (torch/kornia/romatch + CUDA), so n_workers: 1
+# (single GPU process). akaze/sift would also run under .venv but the GPU rows force py3.13.
+save_dir: Experiments_de_eval/sim_persp_all
+overwrite: true
+
+# Global input resize: every source/target view is downsampled so its SHORTER
+# side == imsize (applied in load_view, before synth/matchers). Keeps the deep
+# matchers (loftr/roma/raft) within GPU memory. null = full resolution.
+imsize: 2048
+
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone
+  target: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s
+  # Per-pair B-validity masks (sibling dir, files named by the source stem;
+  # non-zero pixel == VALID). Rides every B transform via valid_mask; known-wrong
+  # B pixels are excluded from ΔE. Comment out / set null to disable.
+  mask: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s-mask
+  mask_erode: 2
+
+image_ext: [".png"]
+n_workers: 1
+save_debug: true
+# sample_indices: [1, 2, 3]
+
+synth:
+  type: pass             # the distorted view is real (iphone-s); return it unchanged
+
+eval:
+  gradient_threshold: 15.0
+  linearize: false       # PNGs are already linear RGB; do not re-linearize
+
+experiments:
+  # ===== 1. all align detectors: homography + optical flow (Normal), gradient patches =====
+  - name: sift_homography_flow
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 1.0}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 15.0}}
+
+  - name: sift_homography_flow
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 1.0}}
+      # refine:  {}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 15.0}}
+
+
+  - name: akaze_homography_flow
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 1.0}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 15.0}}
+
+  # - name: loftr_homography_flow
+  #  matcher:
+  #    align:   {type: keypoint_homography, params: {detector: loftr, use_ransac: true, ransac_threshold: 1.0}}
+  #    refine:  {type: flow}
+  #    patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 15.0}}
+
+  - name: roma_homography_flow
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: roma, use_ransac: true, ransac_threshold: 1.0}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 15.0}}
+
+  # ===== 2. refine sweep — RoMa keypoints, vary the refiner, gradient patches =====
+  # (roma + flow is already covered above as roma_homography_flow)
+  - name: roma_homography_raft
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: roma, use_ransac: true, ransac_threshold: 1.0}}
+      refine:  {type: raft, params: {raft_h: 520, raft_w: 960}}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 15.0}}
+
+  # ===== 3. patches sweep — RoMa keypoints + flow, vary the extractor =====
+  # (roma + flow + gradient is roma_homography_flow above)
+  - name: roma_homography_flow_sgbm
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: roma, use_ransac: true, ransac_threshold: 1.0}}
+      refine:  {type: flow}
+      patches: {type: sgbm, params: {detector: roma, min_disparity: -64, num_disparities: 192, block_size: 7, fundamental_threshold: 1.0, window_radius: 2.0, grid_k: 3}}
+
+  # ===== 4. RoMa dense config (replaces keypoint+homography geometry entirely) =====
+  - name: roma_dense
+    matcher:
+      align:   {type: roma_dense, params: {confidence_threshold: 0.9, smooth_certainty: true}}
+      refine:  {type: none}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 15.0}}

@@ -144,55 +144,46 @@ def save_gradient_keep(
 
 def save_masked_overlay(
     img_a: np.ndarray,
+    img_b: np.ndarray,
     coords_a: np.ndarray,
-    pairs_b: np.ndarray,
     de_vals: np.ndarray,
     out_path: Path,
 ) -> None:
-    """Image view of a SPARSE matcher with the correspondence mask applied.
+    """Mask-applied view of the co-registered pair ΔE is computed on.
 
-    Mirrors the notebooks' "A / B-resampled-onto-A / |A − B|" panel (matching_RoMa
-    cell 11, matching_ROMA_SGM cells 22-23) but for sparse correspondences: each
-    matched B colour is rasterised into A's pixel grid at its A-coordinate, giving
-    a dense ``b_on_a`` image; pixels with no correspondence are masked (blacked
-    out). So you see the *actual image* of the matched region, not just scattered
-    points.
+    ``img_a`` and ``img_b`` are the resized, aligned frames the extractor scored
+    (``res.img_a_full`` / ``res.img_b_full``); ``coords_a`` are the kept-pixel
+    (x, y) coords on that same grid. We build a boolean keep-mask from the coords
+    and show the *actual* masked A and masked B images plus the dense ΔE map —
+    no scatter, no dilation. Mirrors metric.ipynb cell 10 ("A / B-aligned / ΔE").
     """
     _ensure(out_path)
     h, w = img_a.shape[:2]
     xs = np.clip(np.round(coords_a[:, 0]).astype(int), 0, w - 1)
     ys = np.clip(np.round(coords_a[:, 1]).astype(int), 0, h - 1)
 
-    b_on_a = np.zeros((h, w, 3), dtype=np.float32)
-    cover = np.zeros((h, w), dtype=bool)
-    b_on_a[ys, xs] = _clip(pairs_b)
-    cover[ys, xs] = True
+    keep = np.zeros((h, w), dtype=bool)
+    keep[ys, xs] = True
 
     de_img = np.full((h, w), np.nan, dtype=np.float32)
     if de_vals.size == coords_a.shape[0]:
         de_img[ys, xs] = de_vals
     mean = float(de_vals.mean()) if de_vals.size else float("nan")
 
-    # Sparse single-pixel matches read as near-empty at full-frame scale; dilate
-    # the rasterised correspondences a touch so the mask-applied image is legible.
-    k = np.ones((3, 3), np.uint8)
-    cover_vis = cv2.dilate(cover.astype(np.uint8), k, iterations=1) > 0
-    b_on_a = cv2.dilate(b_on_a, k, iterations=1)
-    de_img = np.where(cover_vis, cv2.dilate(np.nan_to_num(de_img), k, iterations=1),
-                      np.nan).astype(np.float32)
-
     a_masked = _clip(img_a).copy()
-    a_masked[~cover_vis] = 0.0
+    b_masked = _clip(img_b).copy()
+    a_masked[~keep] = 0.0
+    b_masked[~keep] = 0.0
 
     fig, axes = plt.subplots(1, 3, figsize=(20, 6))
     axes[0].imshow(a_masked)
-    axes[0].set_title(f"A — mask applied ({int(cover.sum())} matched px)")
+    axes[0].set_title(f"A — mask applied ({int(keep.sum())} kept px)")
     axes[0].axis("off")
-    axes[1].imshow(b_on_a)
-    axes[1].set_title("B colours resampled onto A (mask applied)")
+    axes[1].imshow(b_masked)
+    axes[1].set_title("B (aligned) — mask applied")
     axes[1].axis("off")
     im = axes[2].imshow(de_img, cmap="inferno", vmin=0)
-    axes[2].set_title(f"ΔE map — matched px (mean={mean:.2f})")
+    axes[2].set_title(f"ΔE map — kept px (mean={mean:.2f})")
     axes[2].axis("off")
     plt.colorbar(im, ax=axes[2], fraction=0.046, pad=0.04)
     plt.tight_layout()
@@ -225,6 +216,38 @@ def save_de_histogram(
     plt.tight_layout()
     plt.savefig(str(out_path), dpi=120, bbox_inches="tight")
     plt.close()
+
+
+def save_step_images(debug: dict, out_dir: Path) -> list:
+    """Dump the ACTUAL per-stage images (keys prefixed ``step__``) as plain PNGs.
+
+    Unlike the other ``save_*`` helpers (which render annotated matplotlib
+    figures), this writes the raw pixel arrays each pipeline stage produced —
+    one file per stage — into ``out_dir`` so you can step through exactly what
+    align -> refine -> extract did to the images. RGB (H, W, 3) arrays are saved
+    as colour; (H, W) masks/maps are normalised to 0-255 grayscale. The ``step__``
+    prefix is stripped and the numeric ordering preserved in the filename.
+
+    Returns the list of written paths (also used to know which debug keys were
+    consumed so the generic figure-saver can skip them).
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = []
+    for name in sorted(k for k in debug if k.startswith("step__")):
+        img = debug[name]
+        fname = name[len("step__"):] + ".png"
+        path = out_dir / fname
+        arr = np.asarray(img)
+        if arr.ndim == 3 and arr.shape[2] == 3:
+            bgr = cv2.cvtColor((_clip(arr) * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+            cv2.imwrite(str(path), bgr)
+        else:                                   # mask / single-channel map
+            g = arr.astype(np.float32)
+            mx = float(g.max()) if g.size else 0.0
+            g = g / mx if mx > 1.0 else np.clip(g, 0.0, 1.0)
+            cv2.imwrite(str(path), (g * 255).astype(np.uint8))
+        written.append(path)
+    return written
 
 
 def save_sparse_pairs(

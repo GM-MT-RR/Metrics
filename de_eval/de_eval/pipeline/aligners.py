@@ -67,11 +67,19 @@ class KeypointHomographyAligner(BaseAligner):
                 valid_mask.astype(np.float32), H, (w, h)
             ) > 0.999)
 
+        a_frame = np.clip(img_a.astype(np.float32), 0, 1)
+        b_frame = np.clip(b_aligned.astype(np.float32), 0, 1)
         return AlignContext(
-            a_frame=np.clip(img_a.astype(np.float32), 0, 1),
-            b_aligned=np.clip(b_aligned.astype(np.float32), 0, 1),
+            a_frame=a_frame,
+            b_aligned=b_frame,
             valid_mask=valid,
             kps_a=kps_a, kps_b=kps_b, img_a_full=img_a, img_b_full=img_b,
+            debug={
+                "step__0_input_b": np.clip(img_b.astype(np.float32), 0, 1),
+                "step__1_a_frame": a_frame,
+                "step__2_b_aligned": b_frame,
+                "step__2_valid_mask": valid.astype(np.float32),
+            },
             info={"n_keypoints": int(kps_a.shape[0]), "detector": p["detector"]},
         )
 
@@ -122,6 +130,17 @@ class RomaDenseAligner(BaseAligner):
         b_on_a = F.grid_sample(b_t, grid, mode="bilinear", align_corners=False)[0]
         b_on_a = b_on_a.permute(1, 2, 0).cpu().numpy()           # (h_a, w_a, 3) B in A frame
 
+        # Resample the incoming B-validity mask with the SAME grid as B, so known-
+        # wrong B pixels land in A's frame exactly where B's content did. Without
+        # this the mask (seeded into valid_mask upstream) would be silently dropped.
+        mask_on_a = None
+        if valid_mask is not None:
+            vm_small = cv2.resize(valid_mask.astype(np.float32), (rw, rh),
+                                  interpolation=cv2.INTER_NEAREST)
+            vm_t = torch.from_numpy(np.ascontiguousarray(vm_small))[None, None].float().to(device)
+            vm_on_a = F.grid_sample(vm_t, grid, mode="nearest", align_corners=False)[0, 0]
+            mask_on_a = vm_on_a.cpu().numpy() > 0.5             # (h_a, w_a) in A frame
+
         cert = certainty
         if p["smooth_certainty"]:
             cert = F.avg_pool2d(cert[None, None], kernel_size=5, stride=1, padding=2)[0, 0]
@@ -130,12 +149,19 @@ class RomaDenseAligner(BaseAligner):
         a_frame = np.clip(small_a.astype(np.float32), 0, 1)      # A in its own frame
         b_frame = np.clip(b_on_a.astype(np.float32), 0, 1)       # B resampled onto A
         confident = cert > p["confidence_threshold"]             # valid where confident
+        if mask_on_a is not None:                                # & known-valid B pixels
+            confident = confident & mask_on_a
 
         return AlignContext(
             a_frame=a_frame, b_aligned=b_frame, valid_mask=confident,
             certainty=np.clip(cert, 0, 1).astype(np.float32),
             img_a_full=a_frame, img_b_full=b_frame,
-            debug={"certainty": np.clip(cert, 0, 1).astype(np.float32)},
+            debug={
+                "certainty": np.clip(cert, 0, 1).astype(np.float32),
+                "step__1_a_frame": a_frame,
+                "step__2_b_aligned": b_frame,
+                "step__2_valid_mask": confident.astype(np.float32),
+            },
             info={"confidence_threshold": p["confidence_threshold"],
                   "n_confident": int(confident.sum())},
         )

@@ -1,4 +1,4 @@
-"""Homography(+optical-flow) synthetic-view generator.
+"""Homography(+measured-optical-flow) synthetic-view generator.
 
 Pipeline (extends ``MetricDeProof/synthetic_delta_e.py`` lines 93-104 and the
 synthetic section of ``metric.ipynb``):
@@ -6,13 +6,19 @@ synthetic section of ``metric.ipynb``):
 1. Estimate the iPhone↔Samsung homography ``H`` from AKAZE matches.
 2. Warp the source by a *noisy* ``H⁻¹`` to give it the Samsung-like geometry
    (projective misalignment vs. the original source).
-3. Optionally add a smooth, low-frequency random displacement field via
-   ``cv2.remap`` to introduce *non-linear* local warp (the new optical-flow
-   variant the user asked for). ``flow_amplitude_px == 0`` ⇒ pure-homography
-   baseline.
+3. Optionally add a *measured* dense optical flow (RAFT or Farneback) estimated
+   from the **warped source -> target (Samsung)** as a non-linear local warp via
+   ``cv2.remap``. The flow is estimated on the *warped* source so it lives in the
+   same grid it is remapped on — estimating it from the original source would mix
+   two grids and warp the wrong pixels. ``flow_backend == "none"`` ⇒
+   pure-homography baseline.
 
 The colours are never touched, so corresponding pixels share identical RGB and
-ground-truth ΔE is 0.
+ground-truth ΔE is 0; the residual ΔE a matcher reports is its own registration
+error against the real Samsung deformation.
+
+RAFT runs on the GPU and lazy-imports torch/torchvision; use ``n_workers: 1`` in
+the config (same constraint as the RAFT refiner — the runner runs inline then).
 """
 from __future__ import annotations
 
@@ -24,21 +30,9 @@ import numpy as np
 from .. import _paths  # noqa: F401
 from thesis_lib_shared.metrics import akaze_keypoint_matches
 
+from ..pipeline import flow as flow_est
 from .base import BaseSynth, SynthResult
 from .registry import register_synth
-
-
-def _smooth_flow_field(h: int, w: int, amplitude: float, sigma: float,
-                       rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
-    """Gaussian-smoothed random displacement (dx, dy) in pixels, shape (H, W)."""
-    ksize = int(max(3, round(sigma * 3)) | 1)  # odd kernel
-    dx = rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
-    dy = rng.normal(0.0, 1.0, size=(h, w)).astype(np.float32)
-    dx = cv2.GaussianBlur(dx, (ksize, ksize), sigma)
-    dy = cv2.GaussianBlur(dy, (ksize, ksize), sigma)
-    # Normalize so the largest displacement equals `amplitude` px.
-    scale = amplitude / (max(np.abs(dx).max(), np.abs(dy).max()) + 1e-8)
-    return dx * scale, dy * scale
 
 
 @register_synth("homography_flow")
@@ -46,19 +40,37 @@ class HomographyFlowSynth(BaseSynth):
     def __init__(
         self,
         homography_noise_std: float = 0.05,
-        flow_amplitude_px: float = 6.0,
-        flow_smooth_sigma: float = 40.0,
+        flow_backend: str = "raft",          # "raft" | "farneback" | "none"
+        raft_h: int = 520,
+        raft_w: int = 960,
+        farneback_params: dict | None = None,
         ransac_threshold: float = 1.0,
         seed: int = 0,
         **kwargs: Any,
     ) -> None:
         super().__init__(
             homography_noise_std=homography_noise_std,
-            flow_amplitude_px=flow_amplitude_px,
-            flow_smooth_sigma=flow_smooth_sigma,
+            flow_backend=flow_backend,
+            raft_h=raft_h,
+            raft_w=raft_w,
+            farneback_params=farneback_params or {},
             ransac_threshold=ransac_threshold,
             seed=seed,
             **kwargs,
+        )
+
+    def _measure_flow(self, warped_src: np.ndarray, tgt: np.ndarray) -> np.ndarray:
+        """Dense flow warped-source -> target, in the warped-source grid."""
+        backend = self.params["flow_backend"]
+        if backend == "raft":
+            return flow_est.raft_flow(
+                warped_src, tgt,
+                raft_h=self.params["raft_h"], raft_w=self.params["raft_w"],
+            )
+        if backend == "farneback":
+            return flow_est.farneback_flow(warped_src, tgt, **self.params["farneback_params"])
+        raise ValueError(
+            f"Unknown flow_backend '{backend}'. Use 'raft', 'farneback', or 'none'."
         )
 
     def synthesize(self, src: np.ndarray, tgt: np.ndarray) -> SynthResult:
@@ -87,21 +99,34 @@ class HomographyFlowSynth(BaseSynth):
             np.ones((h, w), dtype=np.float32), H_inv, (w, h)
         ) > 0.999
 
-        info = {"H": H_mat.tolist(), "H_inv": H_inv.tolist(), "flow": False}
+        info = {"H": H_mat.tolist(), "H_inv": H_inv.tolist(),
+                "flow_backend": p["flow_backend"]}
 
-        # 3. Optional smooth optical-flow field -> non-linear local warp.
-        if p["flow_amplitude_px"] > 0.0:
-            dx, dy = _smooth_flow_field(h, w, p["flow_amplitude_px"], p["flow_smooth_sigma"], rng)
+        # 3. Measured optical-flow field (warped source -> target) -> non-linear
+        #    local warp. Estimated on `synth` so the flow lives in the grid it is
+        #    remapped on.
+        if p["flow_backend"] != "none":
+            flow = self._measure_flow(synth, tgt)
             grid_x, grid_y = np.meshgrid(np.arange(w, dtype=np.float32),
                                          np.arange(h, dtype=np.float32))
-            map_x = grid_x + dx
-            map_y = grid_y + dy
+            map_x = grid_x + flow[..., 0]
+            map_y = grid_y + flow[..., 1]
             synth = cv2.remap(synth, map_x, map_y, cv2.INTER_LINEAR,
                               borderMode=cv2.BORDER_CONSTANT, borderValue=0)
             flow_valid = cv2.remap(valid.astype(np.float32), map_x, map_y, cv2.INTER_NEAREST,
                                    borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 0.999
             valid = valid & flow_valid
-            info["flow"] = True
-            info["flow_amplitude_px"] = float(p["flow_amplitude_px"])
+            info["flow_mag_mean"] = float(np.hypot(flow[..., 0], flow[..., 1]).mean())
 
         return SynthResult(image=np.clip(synth, 0.0, 1.0), valid_mask=valid, info=info)
+
+
+@register_synth("homography")
+class HomographySynth(HomographyFlowSynth):
+    """Homography-only synthetic view: the projective misalignment (steps 1-2) with
+    NO non-linear flow (step 3). Pure-homography baseline — pins ``flow_backend``
+    to ``"none"`` so ``synthesize`` skips the optical-flow remap regardless of config."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["flow_backend"] = "none"      # force homography-only
+        super().__init__(**kwargs)

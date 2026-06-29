@@ -1,0 +1,63 @@
+# Evaluate the simulatron 16-bit linear PNG dataset on perspective matchers.
+#
+# Unlike the .mat batches, the "distorted view" here is REAL: iphone-s is the
+# iPhone-X colours forward-warped into the Samsung-S9 viewpoint (simulatron_dataset.py),
+# saved as a 16-bit linear PNG. So source = iphone (reference colours), target = iphone-s
+# (the real perspective-warped view). image_ext: [".png"] triggers the new 16-bit-aware
+# load_view (normalize by bit depth, linear, no sRGB decode).
+#
+# The distorted view is already on disk, so we use the "pass" synth: it returns the
+# target (iphone-s) unchanged as the view-to-match, and the matchers are tested
+# against the REAL iphone->iphone-s warp rather than a fabricated homography+flow.
+#
+# Classical akaze/sift rows run under .venv; roma_dense needs the user python 3.13.
+save_dir: Experiments_de_eval/sim_persp_e
+overwrite: true
+
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone
+  target: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s
+image_ext: [".png"]
+n_workers: 4
+save_debug: true
+
+synth:
+  type: pass             # the distorted view is real (iphone-s); return it unchanged
+
+eval:
+  gradient_threshold: 25.0
+  linearize: false               # PNGs are already linear RGB; do not re-linearize
+
+experiments:
+  # --- projective-only baselines (perspective alignment) ---
+  - name: akaze_homography
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 1.0}}
+      refine:  {type: none}
+      patches: {type: gradient, params: {resize: 0.10, gradient_threshold: 25.0, window_radius: 2.0, grid_k: 3}}
+
+  - name: sift_homography
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 1.0}}
+      refine:  {type: none}
+      patches: {type: gradient, params: {resize: 0.10, gradient_threshold: 25.0, window_radius: 2.0, grid_k: 3}}
+
+  # --- perspective + flow refine (recovers residual non-linear warp) ---
+  - name: akaze_homography_flow
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 1.0}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.10, gradient_threshold: 25.0, window_radius: 2.0, grid_k: 3}}
+
+  - name: sift_homography_flow
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 1.0}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.10, gradient_threshold: 25.0, window_radius: 2.0, grid_k: 3}}
+
+  # Requires the user python 3.13 (romatch). Single GPU process — uncomment to include.
+  # - name: roma_dense
+  #   matcher:
+  #     align:   {type: roma_dense, params: {confidence_threshold: 0.5, smooth_certainty: true}}
+  #     refine:  {type: none}
+  #     patches: {type: gradient, params: {resize: 0.10, gradient_threshold: 25.0, window_radius: 2.0, grid_k: 3}}

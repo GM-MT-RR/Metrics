@@ -1,0 +1,73 @@
+# Parameter sweep #5 — SGBM dense-stereo extractor (matching_*_SGM cell 13/15).
+#
+# Anchor: akaze / sift homography (ransac 1.0) + flow refine, then the SGBM
+# extractor instead of plain gradient patches. SGBM rectifies the pair from the
+# detector's matches, runs StereoSGBM, and back-projects the WHOLE disparity map to
+# dense pixel-aligned A/B pairs. Sweeps:
+#   num_disparities — disparity search range (multiple of 16). Too small clips real
+#                     parallax; too large adds noise/cost.
+#   block_size      — SGBM matching window (odd). Smaller = sharper but noisier disp.
+#   gradient_threshold — optional flat-pixel restriction on the dense pairs (omit /
+#                        null = pure notebook behaviour, no gradient filter).
+#
+# detect_matches uses the classical detector here -> .venv ok, n_workers can be >1.
+save_dir: Experiments_de_eval/sim_persp_sweep/sgbm
+overwrite: true
+imsize: 1024
+
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone
+  target: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s
+  mask: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s-mask
+  mask_erode: 2
+image_ext: [".png"]
+n_workers: 2
+save_debug: true
+sample_indices: [1, 2]
+
+synth:
+  type: pass
+
+eval:
+  gradient_threshold: 50.0
+  linearize: false
+
+experiments:
+  # ---- num_disparities sweep (akaze, block 7, no gradient filter) ----
+  - name: akaze_sgbm_ndisp128
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: sgbm, params: {detector: akaze, min_disparity: -64, num_disparities: 128, block_size: 7, fundamental_threshold: 1.0}}
+
+  - name: akaze_sgbm_ndisp192
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: sgbm, params: {detector: akaze, min_disparity: -64, num_disparities: 192, block_size: 7, fundamental_threshold: 1.0}}
+
+  # ---- block_size sweep (akaze, ndisp 192) ----
+  - name: akaze_sgbm_block5
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: sgbm, params: {detector: akaze, min_disparity: -64, num_disparities: 192, block_size: 5, fundamental_threshold: 1.0}}
+
+  - name: akaze_sgbm_block9
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: sgbm, params: {detector: akaze, min_disparity: -64, num_disparities: 192, block_size: 9, fundamental_threshold: 1.0}}
+
+  # ---- optional flat-pixel filter on the dense SGBM pairs (sift) ----
+  - name: sift_sgbm_nofilter
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: sgbm, params: {detector: sift, min_disparity: -64, num_disparities: 192, block_size: 7, fundamental_threshold: 1.0}}
+
+  - name: sift_sgbm_grad50
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: sgbm, params: {detector: sift, min_disparity: -64, num_disparities: 192, block_size: 7, fundamental_threshold: 1.0, gradient_threshold: 50.0}}

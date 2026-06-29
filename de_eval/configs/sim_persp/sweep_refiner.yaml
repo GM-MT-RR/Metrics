@@ -1,0 +1,71 @@
+# Parameter sweep #2 — refiner stage (none vs Farneback flow vs RAFT).
+#
+# Anchor: akaze / sift homography (ransac 1.0), dense gradient patches. Varies the
+# refine stage to measure how much the residual non-linear warp left by the
+# projective alignment is recovered:
+#   none -> homography-only baseline
+#   flow -> Farneback dense optical flow (CPU)
+#   raft -> RAFT large (GPU, torchvision)
+#
+# RAFT rows need the user python 3.13 env (torch/torchvision + CUDA), so the whole
+# batch is forced to n_workers: 1 (single GPU process). akaze/sift/flow themselves
+# would run under .venv, but the GPU rows pin the interpreter.
+save_dir: Experiments_de_eval/sim_persp_sweep/refiner
+overwrite: true
+imsize: 1024
+
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone
+  target: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s
+  mask: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s-mask
+  mask_erode: 2
+image_ext: [".png"]
+n_workers: 1
+save_debug: true
+sample_indices: [1, 2]
+
+synth:
+  type: pass
+
+eval:
+  gradient_threshold: 50.0
+  linearize: false
+
+experiments:
+  # ---- akaze ----
+  - name: akaze_none
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: none}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  - name: akaze_flow
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  - name: akaze_raft
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: raft, params: {raft_h: 520, raft_w: 960}}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  # ---- sift ----
+  - name: sift_none
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: none}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  - name: sift_flow
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  - name: sift_raft
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: raft, params: {raft_h: 520, raft_w: 960}}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}

@@ -18,6 +18,10 @@ class DataConfig(BaseModel):
     """Source = view to keep colours from (iPhone); target = pose donor (Samsung)."""
     source: str
     target: str
+    mask: Optional[str] = None   # dir of B validity masks; one file per pair, named by source stem
+                                 # (non-zero pixel == VALID). null => no per-pair masking.
+    mask_erode: int = 0          # px to shrink the VALID region by (morphological erosion),
+                                 # discarding a rim around invalid areas to absorb resize bleed.
 
 
 class SynthConfig(BaseModel):

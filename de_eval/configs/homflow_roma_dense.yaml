@@ -22,8 +22,9 @@ synth:
   type: homography_flow
   params:
     homography_noise_std: 0.05
-    flow_amplitude_px: 6.0
-    flow_smooth_sigma: 40.0
+    flow_backend: raft               # GPU (this config is already n_workers: 1)
+    raft_h: 520
+    raft_w: 960
     seed: 0
 
 matcher:

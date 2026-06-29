@@ -20,23 +20,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from . import flow as flow_est
 from .context import AlignContext, BaseRefiner, register_refiner
-
-
-def _equalized_gray(img: np.ndarray) -> np.ndarray:
-    gray = cv2.cvtColor(np.clip(img, 0, 1).astype(np.float32), cv2.COLOR_RGB2GRAY)
-    u8 = (np.clip(gray, 0.0, 1.0) * 255).astype(np.uint8)
-    return cv2.equalizeHist(u8).astype(np.float32) / 255.0
-
-
-def _flow_to_rgb(flow: np.ndarray) -> np.ndarray:
-    """HSV colour-wheel encoding of a flow field (hue=direction, val=magnitude)."""
-    mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-    hsv = np.zeros((*flow.shape[:2], 3), dtype=np.uint8)
-    hsv[..., 0] = (ang * 180 / np.pi / 2).astype(np.uint8)
-    hsv[..., 1] = 255
-    hsv[..., 2] = cv2.normalize(mag, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-    return cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB).astype(np.float32) / 255.0
 
 
 def _apply_residual_flow(ctx: AlignContext, flow: np.ndarray) -> AlignContext:
@@ -57,7 +42,9 @@ def _apply_residual_flow(ctx: AlignContext, flow: np.ndarray) -> AlignContext:
                            borderMode=cv2.BORDER_CONSTANT, borderValue=0) > 0.999
     ctx.b_aligned = np.clip(b_flowed, 0, 1)
     ctx.valid_mask = ctx.valid_mask & flow_valid
-    ctx.debug["residual_flow"] = _flow_to_rgb(flow)
+    ctx.debug["residual_flow"] = flow_est.flow_to_rgb(flow)
+    ctx.debug["step__3_b_refined"] = ctx.b_aligned          # actual post-refine B
+    ctx.debug["step__3_valid_mask"] = ctx.valid_mask.astype(np.float32)
     ctx.info["flow_mag_mean"] = float(np.hypot(flow[..., 0], flow[..., 1]).mean())
     return ctx
 
@@ -91,14 +78,11 @@ class FarnebackRefiner(BaseRefiner):
 
     def refine(self, ctx: AlignContext) -> AlignContext:
         p = self.params
-        gray_a = _equalized_gray(ctx.a_frame)
-        gray_b = _equalized_gray(ctx.b_aligned)
-        flow = cv2.calcOpticalFlowFarneback(
-            (gray_a * 255).astype(np.uint8),
-            (gray_b * 255).astype(np.uint8),
-            None,
-            p["pyr_scale"], p["levels"], p["winsize"], p["iterations"],
-            p["poly_n"], p["poly_sigma"], p["flags"],
+        flow = flow_est.farneback_flow(
+            ctx.a_frame, ctx.b_aligned,
+            pyr_scale=p["pyr_scale"], levels=p["levels"], winsize=p["winsize"],
+            iterations=p["iterations"], poly_n=p["poly_n"], poly_sigma=p["poly_sigma"],
+            flags=p["flags"],
         )
         return _apply_residual_flow(ctx, flow)
 
@@ -109,33 +93,8 @@ class RaftRefiner(BaseRefiner):
         super().__init__(raft_h=raft_h, raft_w=raft_w, **kwargs)
 
     def refine(self, ctx: AlignContext) -> AlignContext:
-        import torch
-        import torchvision.transforms as T
-        from torchvision.models.optical_flow import raft_large, Raft_Large_Weights
-
         p = self.params
-        rh, rw = int(p["raft_h"]), int(p["raft_w"])
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        h, w = ctx.a_frame.shape[:2]
-
-        def _to_raft_batch(g):
-            """Equalized gray (H, W) -> (1, 3, rh, rw) tensor in [-1, 1]."""
-            t = torch.from_numpy(np.ascontiguousarray(g, dtype=np.float32))[None, None]
-            t = t.repeat(1, 3, 1, 1)
-            t = T.Resize(size=(rh, rw), antialias=True)(t)
-            return (t - 0.5) / 0.5
-
-        raft_a = _to_raft_batch(_equalized_gray(ctx.a_frame)).to(device)
-        raft_b = _to_raft_batch(_equalized_gray(ctx.b_aligned)).to(device)
-
-        model = raft_large(weights=Raft_Large_Weights.DEFAULT, progress=False).to(device).eval()
-        with torch.no_grad():
-            flow_lr = model(raft_a, raft_b)[-1]                  # (1, 2, rh, rw) A->B px
-
-        flow = torch.nn.functional.interpolate(
-            flow_lr, size=(h, w), mode="bilinear", align_corners=False
+        flow = flow_est.raft_flow(
+            ctx.a_frame, ctx.b_aligned, raft_h=p["raft_h"], raft_w=p["raft_w"]
         )
-        flow[:, 0] *= w / rw                                     # dx scaled to full width
-        flow[:, 1] *= h / rh                                     # dy scaled to full height
-        flow = flow[0].permute(1, 2, 0).cpu().numpy()            # (h, w, 2)
         return _apply_residual_flow(ctx, flow)

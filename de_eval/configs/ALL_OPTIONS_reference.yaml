@@ -37,13 +37,18 @@ save_debug: false              # default: false  (true writes per-pair notebook-
 # SYNTH — how the misaligned-but-same-colour view is generated from `source`
 # =============================================================================
 synth:
-  type: homography_flow        # the only registered synth
+  type: homography_flow        # homography_flow (measured flow) | homography (no flow) | pass
   params:
     homography_noise_std: 0.05 # default: 0.05  noise on H^-1 (projective misalignment)
-    flow_amplitude_px: 6.0     # default: 6.0   max nonlinear flow displacement; 0.0 => pure-homography baseline
-    flow_smooth_sigma: 40.0    # default: 40.0  Gaussian sigma smoothing the random flow field
+    flow_backend: farneback    # default: raft  measured flow: raft | farneback | none
+                               #   raft     -> GPU, needs py3.13 + CUDA, n_workers: 1
+                               #   farneback-> CPU, n_workers > 1 ok (used here to match n_workers: 8)
+                               #   none     -> pure-homography baseline (no nonlinear warp)
+    raft_h: 520                # default: 520   RAFT working height (flow_backend: raft)
+    raft_w: 960                # default: 960   RAFT working width
+    # farneback_params: {pyr_scale: 0.5, levels: 6, winsize: 25, iterations: 5, poly_n: 5, poly_sigma: 1.2, flags: 0}
     ransac_threshold: 1.0      # default: 1.0   RANSAC reproj threshold for the synth homography
-    seed: 0                    # default: 0     RNG seed (noise + flow are reproducible)
+    seed: 0                    # default: 0     RNG seed (H^-1 noise is reproducible)
 
 # =============================================================================
 # MATCHER — three swappable stages: align -> refine -> patches.

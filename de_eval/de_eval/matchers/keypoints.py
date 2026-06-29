@@ -19,7 +19,11 @@ import cv2
 import numpy as np
 
 from .. import _paths  # noqa: F401
-from thesis_lib_shared.metrics import akaze_keypoint_matches, sift_keypoint_matches
+from thesis_lib_shared.metrics import (
+    akaze_keypoint_matches,
+    sift_keypoint_matches,
+    tiny_roma_keypoint_matches,
+)
 
 
 def _loftr_matches(img_a: np.ndarray, img_b: np.ndarray,
@@ -47,29 +51,6 @@ def _loftr_matches(img_a: np.ndarray, img_b: np.ndarray,
     return mkpts0[:, ::-1].astype(np.float32), mkpts1[:, ::-1].astype(np.float32)
 
 
-def _roma_matches(img_a: np.ndarray, img_b: np.ndarray,
-                  max_keypoints: int = 5000) -> Tuple[np.ndarray, np.ndarray]:
-    import torch
-    from PIL import Image
-    from romatch import tiny_roma_v1_outdoor
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    def _to_pil(img: np.ndarray) -> "Image.Image":
-        return Image.fromarray((np.clip(img, 0, 1) * 255).astype(np.uint8))
-
-    roma = tiny_roma_v1_outdoor(device=device)
-    h_a, w_a = img_a.shape[:2]
-    h_b, w_b = img_b.shape[:2]
-    warp, certainty = roma.match(_to_pil(img_a), _to_pil(img_b), batched=False)
-    matches, _ = roma.sample(warp, certainty, num=max_keypoints)
-    mkpts0, mkpts1 = roma.to_pixel_coordinates(matches, h_a, w_a, h_b, w_b)
-    mkpts0 = mkpts0.cpu().numpy()
-    mkpts1 = mkpts1.cpu().numpy()
-    # (x, y) -> (row, col)
-    return mkpts0[:, ::-1].astype(np.float32), mkpts1[:, ::-1].astype(np.float32)
-
-
 def detect_matches(
     img_a: np.ndarray,
     img_b: np.ndarray,
@@ -90,5 +71,8 @@ def detect_matches(
     if det == "loftr":
         return _loftr_matches(img_a, img_b)
     if det == "roma":
-        return _roma_matches(img_a, img_b)
+        # Delegate to the shared matcher: it caps the input long-side before
+        # building tiny RoMa's dense correlation volume (full-res would need
+        # >100 GiB) and caches the model. RANSAC here is left to the aligner.
+        return tiny_roma_keypoint_matches(img_a, img_b, use_ransac=False)
     raise ValueError(f"Unknown detector '{detector}'. Use akaze | sift | loftr | roma.")

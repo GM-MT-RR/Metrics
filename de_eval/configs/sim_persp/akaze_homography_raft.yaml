@@ -1,0 +1,34 @@
+# Single experiment: AKAZE + homography + RAFT refine, dense gradient patches.
+#
+# Same pipeline params as the sift_raft_720x1280 sweep row, but with the AKAZE
+# detector. align = keypoint_homography (akaze, ransac 0.5); refine = RAFT at
+# 720x1280; patches = dense gradient (resize 0.25, gradient_threshold 25.0).
+#
+# RAFT -> user python 3.13 env (torch/torchvision + CUDA), single GPU process,
+# so n_workers: 1. Run with:  python main.py run -c configs/sim_persp/akaze_homography_raft.yaml
+experiment: akaze_homography_raft
+save_dir: Experiments_de_eval/sim_persp_single
+overwrite: true
+imsize: 1024
+
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone
+  target: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s
+  mask: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s-mask
+  mask_erode: 3
+image_ext: [".png"]
+n_workers: 4
+save_debug: true
+# sample_indices: [1, 2, 3, 4, 5, 6]
+
+synth:
+  type: pass
+
+eval:
+  gradient_threshold: 25.0
+  linearize: false
+
+matcher:
+  align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+  refine:  {type: raft, params: {raft_h: 720, raft_w: 1280}}
+  patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 25.0}}

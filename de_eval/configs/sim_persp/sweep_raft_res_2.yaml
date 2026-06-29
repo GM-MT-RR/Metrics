@@ -1,0 +1,69 @@
+# Parameter sweep #3 — RAFT working resolution (raft_h x raft_w).
+#
+# Anchor: akaze / sift homography (ransac 0.5) + RAFT refine, dense gradient patches.
+# RAFT estimates flow at a fixed (raft_h, raft_w) then upsamples+rescales to full
+# res. Higher resolution -> finer residual flow (better local alignment) but more
+# GPU memory / time. Sweeps three resolutions per detector to find the accuracy/cost
+# trade-off.
+#
+# RAFT -> user python 3.13 env (torch/torchvision + CUDA), single GPU process, so
+# n_workers: 1 (n_workers > 1 would spawn competing CUDA processes).
+save_dir: Experiments_de_eval/sim_persp_sweep/raft_res
+overwrite: true
+imsize: 1024
+
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone
+  target: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s
+  mask: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s-mask
+  mask_erode: 2
+image_ext: [".png"]
+n_workers: 1
+save_debug: true
+sample_indices: [1, 2,3,4,5,6]
+
+synth:
+  type: pass
+
+eval:
+  gradient_threshold: 25.0
+  linearize: false
+
+experiments:
+  # ---- akaze: three RAFT working resolutions ----
+  - name: akaze_raft_360x640
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: raft, params: {raft_h: 360, raft_w: 640}}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 25.0}}
+
+  - name: akaze_raft_520x960
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: raft, params: {raft_h: 520, raft_w: 960}}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 25.0}}
+
+  - name: akaze_raft_720x1280
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: raft, params: {raft_h: 720, raft_w: 1280}}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 25.0}}
+
+  # ---- sift: three RAFT working resolutions ----
+  - name: sift_raft_360x640
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: raft, params: {raft_h: 360, raft_w: 640}}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 25.0}}
+
+  - name: sift_raft_520x960
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: raft, params: {raft_h: 520, raft_w: 960}}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 25.0}}
+
+  - name: sift_raft_720x1280
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: raft, params: {raft_h: 720, raft_w: 1280}}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 25.0}}

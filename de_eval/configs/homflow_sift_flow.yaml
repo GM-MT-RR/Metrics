@@ -1,7 +1,9 @@
 # SIFT keypoints + homography + Farneback optical-flow re-alignment over a
-# homography+flow synthetic view. The flow refiner SHOULD recover the nonlinear
-# warp the synth injects -> expect ΔE markedly lower than refine=none.
+# homography + MEASURED-flow synthetic view (Farneback flow, warped iPhone ->
+# Samsung). The flow refiner SHOULD recover the nonlinear warp the synth injects
+# -> expect ΔE markedly lower than refine=none.
 # Pipeline: align=keypoint_homography, refine=flow, patches=gradient.
+# Farneback synth flow runs on CPU, so n_workers > 1 is fine.
 experiment: homflow_sift_flow
 save_dir: Experiments_de_eval
 overwrite: true
@@ -18,8 +20,8 @@ synth:
   type: homography_flow
   params:
     homography_noise_std: 0.05
-    flow_amplitude_px: 6.0
-    flow_smooth_sigma: 40.0
+    flow_backend: farneback          # CPU; keeps n_workers > 1 viable
+    farneback_params: {pyr_scale: 0.5, levels: 6, winsize: 25, iterations: 5, poly_n: 5, poly_sigma: 1.2, flags: 0}
     seed: 0
 
 matcher:

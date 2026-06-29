@@ -22,8 +22,8 @@ synth:
   type: homography_flow
   params:
     homography_noise_std: 0.05
-    flow_amplitude_px: 6.0
-    flow_smooth_sigma: 40.0
+    flow_backend: farneback          # CPU synth flow so classical rows run under .venv
+    farneback_params: {pyr_scale: 0.5, levels: 6, winsize: 25, iterations: 5, poly_n: 5, poly_sigma: 1.2, flags: 0}
     seed: 0
 
 eval:

@@ -1,21 +1,18 @@
-"""Patch-extraction stage: pick matched centers, then sample a sub-pixel window
-around each one, emitting matched RGB ``pairs_a`` / ``pairs_b`` (N×3) for ΔE.
+"""Patch-extraction stage: select the pixels ΔE is computed on, emitting matched
+RGB ``pairs_a`` / ``pairs_b`` (N×3).
 
-Every center is expanded into a ``grid_k × grid_k`` grid of sub-pixel offsets over
-a window of radius ``window_radius`` px (the shared ``sample_windows`` helper); each
-grid point becomes its own RGB pair (denser, more stable colour sampling than a
-single pixel). So a method that picks ``C`` centers yields ``C * grid_k**2`` pairs.
-
-Two interchangeable extractors, differing only in how they pick the centers:
-- ``gradient`` — flat (low L*-gradient) pixels of the co-registered frame; A and B
-  share the same center coords (build_keep_mask, reused from eval.gradient).
+Two interchangeable extractors, both DENSE (one ΔE per kept pixel):
+- ``gradient`` — DENSE per-pixel ΔE (metric.ipynb cell 10): every flat (low
+  L*-gradient), valid pixel of the co-registered frame becomes one RGB pair, taken
+  directly at that pixel. A and B share coords.
 - ``sgbm``     — keypoints -> fundamental matrix -> uncalibrated stereo rectify ->
-  SGBM disparity -> back-project to matched centers; A and B centers differ, so the
-  identical window offsets are applied around each independently.
+  SGBM disparity -> dense back-projection of the WHOLE disparity map into the
+  original frames (matching_*_SGM cell 13/15): every valid-disparity pixel yields a
+  pixel-aligned A/B RGB pair, optionally restricted to flat pixels.
 """
 from __future__ import annotations
 
-from typing import Any, Optional, Tuple
+from typing import Any, Optional
 
 import cv2
 import numpy as np
@@ -24,66 +21,6 @@ from ..eval.gradient import build_keep_mask
 from ..matchers.base import AlignResult
 from ..matchers.keypoints import detect_matches
 from .context import AlignContext, BaseExtractor, register_extractor
-
-
-def sample_windows(
-    img_a: np.ndarray,
-    centers_a: np.ndarray,
-    img_b: np.ndarray,
-    centers_b: np.ndarray,
-    window_radius: float,
-    grid_k: int,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Sub-pixel ``grid_k × grid_k`` window around each (paired) center.
-
-    centers_a / centers_b are (C, 2) (x, y). For each center, lay a grid of
-    offsets spanning [-window_radius, +window_radius] in x and y, bilinearly
-    sample img_a at centers_a + offsets and img_b at centers_b + offsets, and
-    return one RGB pair per grid point.
-
-    Returns (pairs_a, pairs_b, coords_a, coords_b), each (C*grid_k**2, ·).
-    With grid_k == 1 the window collapses to the centers themselves.
-    """
-    k = max(1, int(grid_k))
-    offs = (np.array([0.0]) if k == 1
-            else np.linspace(-window_radius, window_radius, k)).astype(np.float32)
-    ox, oy = np.meshgrid(offs, offs)                      # (k, k)
-    ox = ox.ravel()[None, :]                              # (1, k*k)
-    oy = oy.ravel()[None, :]
-
-    # cv2.remap caps each map dimension at SHRT_MAX, so a single (N, 1) column
-    # overflows once C*k*k > 32767. Reshape the N samples into a near-square 2D
-    # map (pad to a full last row, remap, then trim back to N).
-    MAXDIM = 32000
-
-    def _remap_flat(img, xs_flat, ys_flat):
-        n = xs_flat.shape[0]
-        width = min(MAXDIM, n) if n > 0 else 1
-        rows = int(np.ceil(n / width))
-        pad = rows * width - n
-        xs2 = np.pad(xs_flat, (0, pad)).reshape(rows, width).astype(np.float32)
-        ys2 = np.pad(ys_flat, (0, pad)).reshape(rows, width).astype(np.float32)
-        out = cv2.remap(img, xs2, ys2, cv2.INTER_LINEAR,
-                        borderMode=cv2.BORDER_REPLICATE)            # (rows, width, 3)
-        return out.reshape(-1, 3)[:n].astype(np.float32)
-
-    def _sample(img, centers):
-        xs = (centers[:, 0:1] + ox).reshape(-1).astype(np.float32)  # (C*k*k,)
-        ys = (centers[:, 1:2] + oy).reshape(-1).astype(np.float32)
-        cols = _remap_flat(img, xs, ys)                            # (C*k*k, 3)
-        coords = np.stack([xs, ys], axis=1)                       # (C*k*k, 2)
-        return cols, coords.astype(np.float32)
-
-    pairs_a, coords_a = _sample(img_a, centers_a.astype(np.float32))
-    pairs_b, coords_b = _sample(img_b, centers_b.astype(np.float32))
-    return pairs_a, pairs_b, coords_a, coords_b
-
-
-def _subsample_centers(centers: np.ndarray, n_keep: int, seed: int) -> np.ndarray:
-    if centers.shape[0] <= n_keep:
-        return centers
-    idx = np.random.default_rng(seed).choice(centers.shape[0], n_keep, replace=False)
-    return centers[idx]
 
 
 def _to_gray_u8(img: np.ndarray) -> np.ndarray:
@@ -97,16 +34,12 @@ class GradientExtractor(BaseExtractor):
         self,
         resize: float = 0.10,
         gradient_threshold: float = 25.0,
-        window_radius: float = 2.0,
-        grid_k: int = 3,
-        max_pairs: int = 50000,
-        seed: int = 0,
         **kwargs: Any,
     ) -> None:
+        # window_radius / grid_k / max_pairs / seed are accepted (via **kwargs)
+        # for backward-compatible configs but ignored: ΔE is dense per-pixel.
         super().__init__(
-            resize=resize, gradient_threshold=gradient_threshold,
-            window_radius=window_radius, grid_k=grid_k,
-            max_pairs=max_pairs, seed=seed, **kwargs,
+            resize=resize, gradient_threshold=gradient_threshold, **kwargs,
         )
 
     def extract(self, ctx: AlignContext) -> AlignResult:
@@ -124,26 +57,28 @@ class GradientExtractor(BaseExtractor):
         if ys.size == 0:
             return _empty_result(ctx, p["gradient_threshold"])
 
-        centers = np.stack([xs, ys], axis=1).astype(np.float32)     # (C, 2) (x, y)
-        n_centers_cap = max(1, int(p["max_pairs"]) // max(1, int(p["grid_k"]) ** 2))
-        centers = _subsample_centers(centers, n_centers_cap, int(p["seed"]))
-
-        # A and B are co-registered here, so the same center serves both views.
-        pairs_a, pairs_b, coords_a, coords_b = sample_windows(
-            a, centers, b, centers, p["window_radius"], p["grid_k"]
-        )
+        # Dense per-pixel ΔE (metric.ipynb cell 10): every kept pixel's RGB is a
+        # pair directly — no window/grid sampling. A and B are co-registered, so
+        # the same (x, y) indexes both.
+        pairs_a = a[ys, xs].astype(np.float32)                      # (N, 3)
+        pairs_b = b[ys, xs].astype(np.float32)
+        coords = np.stack([xs, ys], axis=1).astype(np.float32)      # (N, 2) (x, y)
 
         overlay = a.copy()
         overlay[~keep] *= 0
         return AlignResult(
-            pairs_a=pairs_a, pairs_b=pairs_b, coords_a=coords_a, coords_b=coords_b,
+            pairs_a=pairs_a, pairs_b=pairs_b, coords_a=coords, coords_b=coords,
             img_a_full=a, img_b_full=b,
             kps_a=ctx.kps_a, kps_b=ctx.kps_b,
-            debug={**ctx.debug, "gradient_keep": overlay.astype(np.float32)},
-            info={**ctx.info, "n_centers": int(centers.shape[0]),
-                  "n_pairs": int(pairs_a.shape[0]),
-                  "gradient_threshold": p["gradient_threshold"],
-                  "grid_k": int(p["grid_k"]), "window_radius": float(p["window_radius"])},
+            debug={**ctx.debug,
+                   "gradient_keep": overlay.astype(np.float32),
+                   # actual images the ΔE is computed on (resized A/B + keep mask)
+                   "step__4_a_resized": a.astype(np.float32),
+                   "step__4_b_resized": b.astype(np.float32),
+                   "step__5_keep_mask": keep.astype(np.float32),
+                   "step__6_a_kept": overlay.astype(np.float32)},
+            info={**ctx.info, "n_pairs": int(pairs_a.shape[0]),
+                  "gradient_threshold": p["gradient_threshold"]},
         )
 
 
@@ -161,20 +96,20 @@ class SgbmExtractor(BaseExtractor):
         disp12_max_diff: int = 1,
         clahe_clip: float = 2.0,
         fundamental_threshold: float = 1.0,
-        window_radius: float = 2.0,
-        grid_k: int = 3,
-        max_pairs: int = 50000,
-        seed: int = 0,
+        gradient_threshold: Optional[float] = None,
         **kwargs: Any,
     ) -> None:
+        # window_radius / grid_k / max_pairs / seed are accepted (via **kwargs) for
+        # backward-compatible configs but ignored: ΔE is dense over the disparity
+        # map (notebook matching_*_SGM cell 13/15), not sparse keypoint windows.
+        # gradient_threshold (optional) additionally restricts to flat pixels.
         super().__init__(
             detector=detector, min_disparity=min_disparity,
             num_disparities=num_disparities, block_size=block_size,
             uniqueness_ratio=uniqueness_ratio, speckle_window_size=speckle_window_size,
             speckle_range=speckle_range, disp12_max_diff=disp12_max_diff,
             clahe_clip=clahe_clip, fundamental_threshold=fundamental_threshold,
-            window_radius=window_radius, grid_k=grid_k,
-            max_pairs=max_pairs, seed=seed, **kwargs,
+            gradient_threshold=gradient_threshold, **kwargs,
         )
 
     def _make_sgbm(self):
@@ -229,51 +164,74 @@ class SgbmExtractor(BaseExtractor):
         rect_a = clahe.apply(cv2.warpPerspective(_to_gray_u8(img_a), H1, (w, h)))
         rect_b = clahe.apply(cv2.warpPerspective(_to_gray_u8(img_b), H2, (w, h)))
 
-        disp = self._make_sgbm().compute(rect_a, rect_b).astype(np.float32) / 16.0
+        disparity = self._make_sgbm().compute(rect_a, rect_b).astype(np.float32) / 16.0
+        min_disp = int(p["min_disparity"])
+        disp_vis = np.clip((disparity - min_disp) / max(p["num_disparities"], 1), 0, 1)
 
-        valid_disp = disp > (p["min_disparity"] + 0.5)
-        yr, xr = np.nonzero(valid_disp)
-        if yr.size == 0:
-            return _empty_result(ctx, info_extra={"detector": p["detector"], "n_disp": 0})
-
-        d = disp[yr, xr]
-        rect_a_pts = np.stack([xr, yr, np.ones_like(xr)], axis=1).astype(np.float64)
-        rect_b_pts = np.stack([xr + d, yr, np.ones_like(xr)], axis=1).astype(np.float64)
-
+        # --- Dense, pixel-aligned correspondences (notebook matching_*_SGM cell 13) ---
+        # disparity lives in the RECTIFIED-A frame; SGM treats rect-A as LEFT, so
+        # disparity = x_A - x_B  =>  rect-A (x, y) <-> rect-B (x - d, y). Invert the
+        # rectifying homographies to bring each endpoint back to the ORIGINAL frames
+        # and remap the colour images -> two full images aligned pixel-for-pixel.
         H1inv, H2inv = np.linalg.inv(H1), np.linalg.inv(H2)
-        orig_a = (H1inv @ rect_a_pts.T).T
-        orig_b = (H2inv @ rect_b_pts.T).T
-        orig_a = orig_a[:, :2] / orig_a[:, 2:3]
-        orig_b = orig_b[:, :2] / orig_b[:, 2:3]
+        ys_grid, xs_grid = np.indices((h, w), dtype=np.float32)
+        valid = disparity >= min_disp                       # SGM marks invalid as < min_disp
 
-        in_a = (orig_a[:, 0] >= 0) & (orig_a[:, 0] < w) & (orig_a[:, 1] >= 0) & (orig_a[:, 1] < h)
-        in_b = (orig_b[:, 0] >= 0) & (orig_b[:, 0] < w) & (orig_b[:, 1] >= 0) & (orig_b[:, 1] < h)
-        ok_pts = in_a & in_b
-        centers_a = orig_a[ok_pts].astype(np.float32)               # (C, 2) (x, y) in A
-        centers_b = orig_b[ok_pts].astype(np.float32)               # paired centers in B
-        if centers_a.shape[0] == 0:
+        def _apply_H(Hm, x, y):
+            den = Hm[2, 0] * x + Hm[2, 1] * y + Hm[2, 2]
+            u = (Hm[0, 0] * x + Hm[0, 1] * y + Hm[0, 2]) / den
+            v = (Hm[1, 0] * x + Hm[1, 1] * y + Hm[1, 2]) / den
+            return np.ascontiguousarray(u, np.float32), np.ascontiguousarray(v, np.float32)
+
+        mapAx, mapAy = _apply_H(H1inv, xs_grid, ys_grid)            # rect-A -> orig-A
+        mapBx, mapBy = _apply_H(H2inv, xs_grid - disparity, ys_grid)  # rect-B(x-d) -> orig-B
+
+        in_a = (mapAx >= 0) & (mapAx <= w - 1) & (mapAy >= 0) & (mapAy <= h - 1)
+        in_b = (mapBx >= 0) & (mapBx <= w - 1) & (mapBy >= 0) & (mapBy <= h - 1)
+        paired = valid & in_a & in_b
+
+        # The mask carried through the pipeline (B-validity + warp/flow validity) is
+        # in A's frame; bring it into the rectified-A frame to drop known-wrong B
+        # pixels from the dense ΔE as well.
+        vm_rect = cv2.warpPerspective(ctx.valid_mask.astype(np.float32), H1, (w, h),
+                                      flags=cv2.INTER_NEAREST) > 0.5
+        paired &= vm_rect
+
+        # Dense colour images, remapped into the rectified-A frame, then sampled.
+        patches_a = cv2.remap(np.clip(img_a, 0, 1), mapAx, mapAy, cv2.INTER_LINEAR)
+        patches_b = cv2.remap(np.clip(img_b, 0, 1), mapBx, mapBy, cv2.INTER_LINEAR)
+
+        # Optional flat-pixel restriction (config: gradient_threshold). Notebook SGM
+        # has no gradient filter; off by default (None) keeps the notebook behaviour.
+        if p.get("gradient_threshold") is not None:
+            paired &= build_keep_mask(patches_a, patches_b, paired, float(p["gradient_threshold"]))
+
+        ys_k, xs_k = np.nonzero(paired)
+        if ys_k.size == 0:
             return _empty_result(ctx, info_extra={"detector": p["detector"], "n_disp": 0})
 
-        # Subsample the matched center PAIRS together (keep A/B aligned).
-        n_centers_cap = max(1, int(p["max_pairs"]) // max(1, int(p["grid_k"]) ** 2))
-        if centers_a.shape[0] > n_centers_cap:
-            idx = np.random.default_rng(int(p["seed"])).choice(
-                centers_a.shape[0], n_centers_cap, replace=False)
-            centers_a, centers_b = centers_a[idx], centers_b[idx]
+        pairs_a = patches_a[ys_k, xs_k].astype(np.float32)         # (N, 3)
+        pairs_b = patches_b[ys_k, xs_k].astype(np.float32)
+        coords = np.stack([xs_k, ys_k], axis=1).astype(np.float32)  # rect-A frame (x, y)
 
-        pairs_a, pairs_b, coords_a, coords_b = sample_windows(
-            img_a, centers_a, img_b, centers_b, p["window_radius"], p["grid_k"]
-        )
-
-        disp_vis = np.clip((disp - p["min_disparity"]) / max(p["num_disparities"], 1), 0, 1)
+        a_kept = patches_a.copy(); a_kept[~paired] = 0.0
+        b_kept = patches_b.copy(); b_kept[~paired] = 0.0
         return AlignResult(
-            pairs_a=pairs_a, pairs_b=pairs_b, coords_a=coords_a, coords_b=coords_b,
-            img_a_full=img_a, img_b_full=img_b,
+            pairs_a=pairs_a, pairs_b=pairs_b, coords_a=coords, coords_b=coords,
+            img_a_full=patches_a.astype(np.float32), img_b_full=patches_b.astype(np.float32),
             kps_a=ctx.kps_a, kps_b=ctx.kps_b,
-            debug={**ctx.debug, "sgbm_disparity": disp_vis.astype(np.float32)},
+            debug={**ctx.debug,
+                   "sgbm_disparity": disp_vis.astype(np.float32),
+                   # actual per-stage images for the steps/ dump (dense extractor):
+                   "step__4_a_frame": np.clip(img_a, 0, 1).astype(np.float32),
+                   "step__4_b_aligned": np.clip(img_b, 0, 1).astype(np.float32),
+                   "step__4_disparity": disp_vis.astype(np.float32),
+                   "step__5_valid_mask": paired.astype(np.float32),
+                   # the dense pixel-aligned colour images ΔE is actually computed on
+                   "step__6_a_patches": a_kept.astype(np.float32),
+                   "step__6_b_patches": b_kept.astype(np.float32)},
             info={**ctx.info, "detector": p["detector"],
-                  "n_centers": int(centers_a.shape[0]), "n_pairs": int(pairs_a.shape[0]),
-                  "grid_k": int(p["grid_k"]), "window_radius": float(p["window_radius"])},
+                  "n_pairs": int(pairs_a.shape[0])},
         )
 
 

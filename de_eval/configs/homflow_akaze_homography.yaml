@@ -1,7 +1,9 @@
-# AKAZE keypoints + homography re-alignment (no refine) over a homography+flow
-# synthetic view. With flow_amplitude_px > 0 the synth has a nonlinear warp the
-# homography CANNOT undo -> expect a visibly NON-zero residual ΔE (the negative
-# control). Pipeline: align=keypoint_homography, refine=none, patches=gradient.
+# AKAZE keypoints + RAFT re-alignment over a homography + MEASURED-flow synthetic
+# view. The synth warps the iPhone by a noisy H⁻¹ then adds the real RAFT flow
+# (warped iPhone -> Samsung), so the nonlinear part reflects the actual device
+# geometry; the RAFT refiner then tries to undo it. Pipeline:
+# align=keypoint_homography, refine=raft, patches=gradient.
+# n_workers: 1 — the synth's RAFT flow runs on the GPU (runner goes inline).
 experiment: homflow_akaze_homography_raft
 
 save_dir: Experiments_de_eval
@@ -12,15 +14,16 @@ data:
   target: ../../data/iphone2samsung_or/pair-np-dv/paired/samsung-s9/dng # Samsung (pose donor)
 image_ext: [".mat"]
 sample_indices: [0]
-n_workers: 10
+n_workers: 1
 save_debug: true
 
 synth:
   type: homography_flow
   params:
     homography_noise_std: 0.05
-    flow_amplitude_px: 6.0
-    flow_smooth_sigma: 40.0
+    flow_backend: raft
+    raft_h: 520
+    raft_w: 960
     seed: 0
 
 matcher:

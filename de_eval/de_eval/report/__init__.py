@@ -11,6 +11,7 @@ from .debug import (
     save_de_histogram,
     save_sparse_pairs,
     save_masked_overlay,
+    save_step_images,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "save_de_histogram",
     "save_sparse_pairs",
     "save_masked_overlay",
+    "save_step_images",
 ]

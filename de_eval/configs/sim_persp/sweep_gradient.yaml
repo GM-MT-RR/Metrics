@@ -1,0 +1,64 @@
+# Parameter sweep #4 — flat-pixel selection (gradient_threshold) and input resize.
+#
+# Anchor: akaze / sift homography (ransac 1.0) + flow refine. Varies the gradient
+# extractor's two knobs:
+#   gradient_threshold — L* gradient cutoff for "flat" pixels. Lower keeps only very
+#                        flat regions (ΔE cleaner but fewer pixels); higher admits
+#                        more texture (more pixels, more misregistration noise).
+#   resize            — global frame resize the ΔE runs on. Smaller = faster, smooths
+#                        edges (so the same threshold keeps relatively more pixels).
+#
+# Classical detectors + flow -> .venv, n_workers can be >1.
+save_dir: Experiments_de_eval/sim_persp_sweep/gradient
+overwrite: true
+imsize: 1024
+
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone
+  target: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s
+  mask: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s-mask
+  mask_erode: 2
+image_ext: [".png"]
+n_workers: 4
+save_debug: true
+sample_indices: [1, 2]
+
+synth:
+  type: pass
+
+eval:
+  gradient_threshold: 50.0
+  linearize: false
+
+experiments:
+  # ---- gradient_threshold sweep (akaze, resize 0.25) ----
+  - name: akaze_grad_25
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 25.0}}
+
+  - name: akaze_grad_50
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  # ---- input-resize sweep (sift, gradient_threshold 50) ----
+  - name: sift_resize_0p10
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.10, gradient_threshold: 50.0}}
+
+  - name: sift_resize_0p25
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  - name: sift_resize_0p50
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: flow}
+      patches: {type: gradient, params: {resize: 0.50, gradient_threshold: 50.0}}

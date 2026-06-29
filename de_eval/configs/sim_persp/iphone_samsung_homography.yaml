@@ -1,0 +1,41 @@
+# Variant: REAL iphone-x + samsung-s9 paired captures, HOMOGRAPHY-ONLY synth.
+#
+# Twin of iphone_samsung_homflow.yaml but with synth: homography — the projective
+# misalignment ONLY (noisy H^-1 warp), with NO non-linear flow injected. This is the
+# pure-homography baseline: the matcher's flow refiner has no synthetic local warp to
+# recover, so it isolates how well plain projective alignment recovers ΔE = 0.
+#
+# Colours are untouched -> ground-truth ΔE = 0; reported ΔE is registration error.
+# Classical detector + flow -> runs under .venv; n_workers can be > 1.
+experiment: iphone_samsung_homography
+save_dir: Experiments_de_eval/iphone_samsung
+overwrite: true
+
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/paired/iphone-x/dng
+  target: ../../data/iphone2samsung_or/pair-np-dv/paired/samsung-s9/dng
+image_ext: [".mat"]
+sample_indices: [0, 1, 2]
+n_workers: 4
+save_debug: true
+
+synth:
+  type: homography           # projective misalignment only (no flow)
+  params:
+    homography_noise_std: 0.05
+    seed: 0
+
+matcher:
+  align:
+    type: keypoint_homography
+    params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}
+  refine:
+    type: flow
+    params: {pyr_scale: 0.5, levels: 6, winsize: 25, iterations: 5, poly_n: 5, poly_sigma: 1.2, flags: 0}
+  patches:
+    type: gradient
+    params: {resize: 1.0, gradient_threshold: 25.0}
+
+eval:
+  gradient_threshold: 25.0
+  linearize: false

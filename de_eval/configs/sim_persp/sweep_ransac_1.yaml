@@ -1,0 +1,65 @@
+# Parameter sweep #1 — RANSAC reprojection threshold (homography fit tightness).
+#
+# Anchor: akaze / sift keypoint homography, refine=none, dense gradient patches.
+# Varies ONLY ransac_threshold (px). Lower = stricter inlier set (cleaner H, fewer
+# matches); higher = looser (more matches, risk of a sloppier homography). Read the
+# ΔE summary to find the knee where alignment stops improving.
+#
+# Classical detectors -> runs under .venv. No GPU rows here, so n_workers can be >1.
+save_dir: Experiments_de_eval/sim_persp_sweep/ransac
+overwrite: true
+imsize: 1024
+
+data:
+  source: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone
+  target: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s
+  mask: ../../data/iphone2samsung_or/pair-np-dv/simulatron/iphone-s-mask
+  mask_erode: 2
+image_ext: [".png"]
+n_workers: 4
+save_debug: true
+sample_indices: [1, 2,3,4,5,6,7]
+
+synth:
+  type: pass
+
+eval:
+  gradient_threshold: 20.0
+  linearize: false
+
+experiments:
+  - name: akaze_ransac_0p5
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: none}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  - name: akaze_ransac_1p0
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 1.0}}
+      refine:  {type: none}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  - name: akaze_ransac_3p0
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: akaze, use_ransac: true, ransac_threshold: 3.0}}
+      refine:  {type: none}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  - name: sift_ransac_0p5
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 0.5}}
+      refine:  {type: none}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  - name: sift_ransac_1p0
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 1.0}}
+      refine:  {type: none}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
+
+  - name: sift_ransac_3p0
+    matcher:
+      align:   {type: keypoint_homography, params: {detector: sift, use_ransac: true, ransac_threshold: 3.0}}
+      refine:  {type: none}
+      patches: {type: gradient, params: {resize: 0.25, gradient_threshold: 50.0}}
